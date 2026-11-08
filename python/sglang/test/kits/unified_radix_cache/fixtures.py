@@ -121,8 +121,10 @@ def build_fixture(
     ] = None,
     tree_core_backend: Optional[str] = None,
     kv_event_lora_names: Optional[KvEventLoraNames] = None,
+    device: Optional[str] = None,
 ):
-    """Create (tree, allocator, req_to_token_pool) from a CacheConfig.
+    """Create (tree, allocator, req_to_token_pool) from a CacheConfig, on
+    ``device`` (default: this process's accelerator).
 
     ``tree_page_size`` stands in for DCP but only reaches values derived from the
     tree page; the allocator keeps ``cfg.page_size``, so do not read insert or
@@ -141,7 +143,7 @@ def build_fixture(
         else mamba_cache_chunk_size
     )
     set_global_server_args_for_scheduler(server_args)
-    device = get_device()
+    device = device or get_device()
 
     mamba2_cache_params = None
     if cfg.has_mamba:
