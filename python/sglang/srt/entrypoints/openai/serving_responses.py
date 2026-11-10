@@ -1600,24 +1600,25 @@ class OpenAIServingResponses(OpenAIServingChat):
                 message.get("name"),
                 encode_custom_tool_input(message.get("input") or ""),
             )
-        if msg_type == "function_call_output":
-            # Preserve multimodal tool results by translating Responses parts to
-            # their Chat Completions equivalents, as for message input items.
-            out = message.get("output", "")
-            if isinstance(out, list):
-                out = [
-                    cls._normalize_response_content_part_for_chat(part) for part in out
+        if msg_type in ("function_call_output", "custom_tool_call_output"):
+            output = message.get("output", "")
+            content = cls._flatten_tool_output(output)
+            if isinstance(output, list):
+                parts = [
+                    cls._normalize_response_content_part_for_chat(part)
+                    for part in output
                 ]
+                # Images need structured content to reach multimodal processing.
+                # Retain the existing string representation for text-only tools.
+                if any(
+                    isinstance(part, dict) and part.get("type") == "image_url"
+                    for part in parts
+                ):
+                    content = parts
             return {
                 "role": "tool",
                 "tool_call_id": message.get("call_id"),
-                "content": out,
-            }
-        if msg_type == "custom_tool_call_output":
-            return {
-                "role": "tool",
-                "tool_call_id": message.get("call_id"),
-                "content": cls._flatten_tool_output(message.get("output", "")),
+                "content": content,
             }
         # Reasoning items render as {role: assistant, reasoning_content};
         # empty ones drop instead of injecting an empty assistant block.

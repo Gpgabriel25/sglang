@@ -376,79 +376,147 @@ class InputMessageConstructionTestCase(CustomTestCase):
             ],
         )
 
-    def test_function_call_output_image_reaches_chat_processing(self):
-        serving = make_serving(is_multimodal=True)
-        captured = {}
+    def test_tool_output_images_reach_chat_processing(self):
+        for output_type in ("function_call_output", "custom_tool_call_output"):
+            with self.subTest(output_type=output_type):
+                serving = make_serving(is_multimodal=True)
+                captured = {}
 
-        def fake_process(chat_request, is_multimodal):
-            captured["chat_request"] = chat_request
-            captured["is_multimodal"] = is_multimodal
-            return MessageProcessingResult(
-                prompt="rendered tool image",
-                prompt_ids=[1, 2, 3],
-                image_data=["https://example.com/image.png"],
-                audio_data=None,
-                video_data=None,
-                modalities=["image"],
-                stop=[],
-            )
+                def fake_process(chat_request, is_multimodal, **_):
+                    captured["chat_request"] = chat_request
+                    captured["is_multimodal"] = is_multimodal
+                    images = [
+                        part.image_url.url
+                        for part in chat_request.messages[0].content
+                        if part.type == "image_url"
+                    ]
+                    return MessageProcessingResult(
+                        prompt="rendered tool images",
+                        prompt_ids=[1, 2, 3],
+                        image_data=images,
+                        audio_data=None,
+                        video_data=None,
+                        modalities=["image"],
+                        stop=[],
+                    )
 
-        serving._process_messages = Mock(side_effect=fake_process)
-        request = ResponsesRequest(
-            model="x",
-            input=[
-                {
-                    "type": "function_call_output",
-                    "call_id": "call_image",
-                    "output": [
-                        {"type": "input_text", "text": "tool result"},
+                serving._process_messages = Mock(side_effect=fake_process)
+                request = ResponsesRequest(
+                    model="x",
+                    input=[
                         {
-                            "type": "input_image",
-                            "image_url": "https://example.com/image.png",
-                            "detail": "high",
-                        },
+                            "type": output_type,
+                            "call_id": "call_image",
+                            "output": [
+                                {"type": "input_text", "text": "first image"},
+                                {
+                                    "type": "input_image",
+                                    "image_url": "https://example.com/first.png",
+                                    "detail": "high",
+                                },
+                                {"type": "input_text", "text": "second image"},
+                                {
+                                    "type": "input_image",
+                                    "image_url": "https://example.com/second.png",
+                                },
+                            ],
+                        }
                     ],
-                }
-            ],
-            store=False,
-        )
+                    store=False,
+                )
 
-        messages, request_prompts, engine_prompts, _ = asyncio.run(
-            serving._make_request(request, None, serving.tokenizer_manager.tokenizer)
-        )
+                messages, request_prompts, engine_prompts, processed = asyncio.run(
+                    serving._make_request(
+                        request, None, serving.tokenizer_manager.tokenizer
+                    )
+                )
 
-        self.assertEqual(
-            messages,
-            [
-                {
-                    "role": "tool",
-                    "tool_call_id": "call_image",
-                    "content": [
-                        {"type": "text", "text": "tool result"},
+                self.assertEqual(
+                    messages,
+                    [
                         {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": "https://example.com/image.png",
-                                "detail": "high",
-                            },
-                        },
+                            "role": "tool",
+                            "tool_call_id": "call_image",
+                            "content": [
+                                {"type": "text", "text": "first image"},
+                                {
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": "https://example.com/first.png",
+                                        "detail": "high",
+                                    },
+                                },
+                                {"type": "text", "text": "second image"},
+                                {
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": "https://example.com/second.png",
+                                        "detail": "auto",
+                                    },
+                                },
+                            ],
+                        }
                     ],
-                }
-            ],
-        )
-        self.assertEqual(request_prompts, ["rendered tool image"])
-        self.assertEqual(engine_prompts, ["rendered tool image"])
-        self.assertTrue(captured["is_multimodal"])
-        chat_message = captured["chat_request"].messages[0]
-        self.assertEqual(chat_message.role, "tool")
-        self.assertEqual(chat_message.content[0].type, "text")
-        self.assertEqual(chat_message.content[0].text, "tool result")
-        self.assertEqual(chat_message.content[1].type, "image_url")
-        self.assertEqual(
-            chat_message.content[1].image_url.url,
-            "https://example.com/image.png",
-        )
-        self.assertEqual(chat_message.content[1].image_url.detail, "high")
+                )
+                self.assertEqual(request_prompts, ["rendered tool images"])
+                self.assertEqual(engine_prompts, ["rendered tool images"])
+                self.assertEqual(
+                    processed.image_data,
+                    [
+                        "https://example.com/first.png",
+                        "https://example.com/second.png",
+                    ],
+                )
+                self.assertTrue(captured["is_multimodal"])
+                chat_message = captured["chat_request"].messages[0]
+                self.assertEqual(chat_message.role, "tool")
+                self.assertEqual(chat_message.tool_call_id, "call_image")
+                self.assertEqual(
+                    [part.type for part in chat_message.content],
+                    ["text", "image_url", "text", "image_url"],
+                )
+                self.assertEqual(chat_message.content[0].text, "first image")
+                self.assertEqual(chat_message.content[1].image_url.detail, "high")
+                self.assertEqual(chat_message.content[2].text, "second image")
+                self.assertEqual(chat_message.content[3].image_url.detail, "auto")
+
+    def test_text_tool_outputs_keep_string_content(self):
+        outputs = [
+            ("plain text", "plain text"),
+            ([], ""),
+            (
+                [
+                    {"type": "input_text", "text": "first"},
+                    {"type": "input_text", "text": "second"},
+                ],
+                "firstsecond",
+            ),
+        ]
+        for output_type in ("function_call_output", "custom_tool_call_output"):
+            for output, expected in outputs:
+                with self.subTest(output_type=output_type, output=output):
+                    serving = make_serving()
+                    request = ResponsesRequest(
+                        model="x",
+                        input=[
+                            {
+                                "type": output_type,
+                                "call_id": "call_text",
+                                "output": output,
+                            }
+                        ],
+                        store=False,
+                    )
+                    self.assertEqual(
+                        serving._construct_input_messages(request),
+                        [
+                            {
+                                "role": "tool",
+                                "tool_call_id": "call_text",
+                                "content": expected,
+                            }
+                        ],
+                    )
 
     def test_previous_response_id_input_list_does_not_call_copy_module(self):
         serving = make_serving()
