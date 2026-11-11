@@ -8,7 +8,9 @@ from __future__ import annotations
 import secrets
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Optional
+from typing import Any, Callable, Optional, Union
+
+ApiKey = Union[Optional[str], Callable[[], Optional[str]]]
 
 
 @dataclass(frozen=True)
@@ -154,10 +156,14 @@ def decide_request_auth(
 def add_api_key_middleware(
     app,
     *,
-    api_key: Optional[str],
-    admin_api_key: Optional[str],
+    api_key: ApiKey,
+    admin_api_key: ApiKey,
 ):
-    """Add middleware for three endpoint auth levels: normal/admin_optional/admin_force."""
+    """Install auth before startup, optionally resolving keys after worker startup.
+
+    A callable is evaluated for each HTTP request, after the worker's lifespan
+    has published its configuration. Static keys retain their existing behavior.
+    """
     # Import lazily so `decide_request_auth()` can be unit-tested without FastAPI installed.
     from fastapi.responses import ORJSONResponse
     from starlette.requests import Request
@@ -184,8 +190,12 @@ def add_api_key_middleware(
                 method=request.method,
                 path=path,
                 authorization_header=authz,
-                api_key=self.api_key,
-                admin_api_key=self.admin_api_key,
+                api_key=self.api_key() if callable(self.api_key) else self.api_key,
+                admin_api_key=(
+                    self.admin_api_key()
+                    if callable(self.admin_api_key)
+                    else self.admin_api_key
+                ),
                 auth_level=level,
             )
 
